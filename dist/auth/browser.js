@@ -105,14 +105,17 @@ async function launchAndAuth() {
         page.on('request', observeRequest);
         console.log('DeepFree: Opening browser for authentication...');
         console.log('Please log in at https://chat.deepseek.com/sign_in');
-        console.log('Use email/password login (not Google auth)');
+        console.log('You may use Google authentication or email/password login.');
         await page.goto(DEEPSEEK_SIGN_IN, {
             waitUntil: 'networkidle',
         });
         await waitForUserLogin(page);
         await page.waitForTimeout(1500);
         await new Promise((resolve) => setTimeout(resolve, 250));
-        await Promise.all(pendingAuthHeaderReads);
+        await Promise.race([
+            Promise.all(pendingAuthHeaderReads),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+        ]);
         const authState = await captureAuthStateFromPage(page, observedAuthorizationToken);
         const verification = await verifyAuthState(authState);
         if (!verification.success) {
@@ -167,6 +170,16 @@ async function detectBrowser() {
         { name: 'chromium', family: 'chromium' },
         { name: 'firefox', family: 'firefox' },
     ];
+    const preferredBrowser = process.platform === 'win32' ? getWindowsDefaultBrowser() : null;
+    if (preferredBrowser) {
+        browserCandidates.sort((left, right) => {
+            if (left.name === preferredBrowser)
+                return -1;
+            if (right.name === preferredBrowser)
+                return 1;
+            return 0;
+        });
+    }
     for (const candidate of browserCandidates) {
         try {
             let executablePath = null;
@@ -218,6 +231,29 @@ async function detectBrowser() {
         catch {
             continue;
         }
+    }
+    return null;
+}
+function getWindowsDefaultBrowser() {
+    try {
+        const output = (0, node_child_process_1.execSync)('reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice" /v ProgId', { encoding: 'utf8', stdio: 'pipe' });
+        const match = output.match(/ProgId\s+REG_SZ\s+([^\r\n]+)/i);
+        const progId = match?.[1]?.trim().toLowerCase();
+        if (!progId)
+            return null;
+        if (progId.includes('chrome'))
+            return 'chrome';
+        if (progId.includes('edge'))
+            return 'msedge';
+        // Playwright requires a matching Firefox automation build. Prefer an
+        // installed Chromium browser when the system default is unsupported.
+        if (progId.includes('firefox'))
+            return null;
+        if (progId.includes('brave'))
+            return 'brave';
+    }
+    catch {
+        return null;
     }
     return null;
 }

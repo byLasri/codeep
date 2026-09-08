@@ -7,8 +7,8 @@ A minimal TypeScript authentication client for DeepSeek Web.
 This implementation focuses on proving the authentication flow:
 
 1. User runs `deepfree login`
-2. System launches browser to https://chat.deepseek.com/sign_in
-3. User manually completes AWS WAF + DeepSeek authentication
+2. System launches the installed system default browser to https://chat.deepseek.com/sign_in
+3. User manually completes AWS WAF + DeepSeek authentication using Google or email/password
 4. System captures minimum authentication state
 5. System verifies authentication via HTTP request
 6. System stores auth state in OS application-data directory

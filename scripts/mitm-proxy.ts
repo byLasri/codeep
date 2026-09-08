@@ -1,138 +1,95 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as http from 'http';
-import * as https from 'https';
-import { URL } from 'url';
-import * as tls from 'tls';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { Proxy } from 'http-mitm-proxy';
 
-const PROXY_PORT = 8080;
+const PROXY_PORT = Number(process.env.PROXY_PORT ?? 8080);
 const TARGET_HOST = 'chat.deepseek.com';
-const OUTPUT_DIR = path.join(__dirname, '..', 'captured');
+const OUTPUT_DIR = join(__dirname, '..');
+const HEX_FILE = join(OUTPUT_DIR, 'captured-request.hex');
+const JSON_FILE = join(OUTPUT_DIR, 'captured-request.json');
+const CERT_DIR = join(OUTPUT_DIR, '.http-mitm-proxy');
 
-// Ensure output directory exists
-if (!fs.existsSync(OUTPUT_DIR)) {
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+if (!existsSync(CERT_DIR)) {
+  mkdirSync(CERT_DIR, { recursive: true });
 }
 
-console.log('🔍 DeepSeek MITM Proxy Starter');
-console.log('================================');
-console.log(`Target: ${TARGET_HOST}`);
-console.log(`Output: ${OUTPUT_DIR}`);
-console.log('');
-console.log('INSTRUCTIONS:');
-console.log('1. Configure your browser to use proxy: http://localhost:' + PROXY_PORT);
-console.log('2. Visit https://chat.deepseek.com and log in');
-console.log('3. Send a chat message to capture the full request');
-console.log('4. Check the "captured" folder for request data');
-console.log('');
-console.log('Starting proxy server...');
+const proxy = new Proxy();
 
-// Simple HTTP proxy that intercepts requests to chat.deepseek.com
-const proxy = http.createServer((req, res) => {
-  const parsedUrl = new URL(req.url || '', `http://${req.headers.host}`);
-  
-  if (parsedUrl.hostname === TARGET_HOST && req.method === 'POST') {
-    console.log(`\n📩 Intercepting request: ${parsedUrl.pathname}`);
-    
-    let requestBody = Buffer.alloc(0);
-    
-    req.on('data', (chunk) => {
-      requestBody = Buffer.concat([requestBody, chunk]);
-    });
-    
-    req.on('end', () => {
-      // Save raw request bytes as hex
-      const hexFile = path.join(OUTPUT_DIR, `request-${Date.now()}.hex`);
-      fs.writeFileSync(hexFile, requestBody.toString('hex'));
-      console.log(`💾 Saved raw bytes to: ${hexFile}`);
-      
-      // Save as JSON for easier analysis
-      const jsonFile = path.join(OUTPUT_DIR, `request-${Date.now()}.json`);
-      const requestData = {
-        url: parsedUrl.href,
-        method: req.method,
-        headers: req.headers,
-        body: requestBody.toString('utf-8'),
-        bodyHex: requestBody.toString('hex'),
-        bodyLength: requestBody.length,
-        timestamp: new Date().toISOString()
-      };
-      fs.writeFileSync(jsonFile, JSON.stringify(requestData, null, 2));
-      console.log(`💾 Saved JSON to: ${jsonFile}`);
-      
-      // Log key info
-      console.log('📊 Request Summary:');
-      console.log(`   Path: ${parsedUrl.pathname}`);
-      console.log(`   Body Length: ${requestBody.length} bytes`);
-      if (req.headers['x-ds-pow-response']) {
-        console.log(`   PoW Response: ${String(req.headers['x-ds-pow-response']).substring(0, 50)}...`);
-      }
-      console.log('');
-    });
-  }
-  
-  // Forward request to target
-  const targetUrl = `https://${TARGET_HOST}${parsedUrl.pathname}${parsedUrl.search}`;
-  const options = {
-    hostname: TARGET_HOST,
-    port: 443,
-    path: parsedUrl.pathname + parsedUrl.search,
-    method: req.method,
-    headers: {
-      ...req.headers,
-      host: TARGET_HOST
+function isTargetRequest(host: string | undefined): boolean {
+  return host?.split(':')[0].toLowerCase() === TARGET_HOST;
+}
+
+function saveCapture(ctx: Parameters<NonNullable<Parameters<typeof proxy.onRequest>[0]>>[0], body: Buffer): void {
+  const request = ctx.clientToProxyRequest;
+  const headers = { ...request.headers };
+
+  for (const header of ['authorization', 'cookie', 'set-cookie', 'x-ds-pow-response']) {
+    if (header in headers) {
+      headers[header] = '[REDACTED]';
     }
-  };
-  
-  const proxyReq = https.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-    proxyRes.pipe(res);
-  });
-  
-  proxyReq.on('error', (e) => {
-    console.error('Proxy request error:', e.message);
-    res.writeHead(500);
-    res.end('Proxy error');
-  });
-  
-  req.pipe(proxyReq);
-});
-
-proxy.on('connect', (req, clientSocket, head) => {
-  // Handle HTTPS CONNECT
-  const parsedUrl = new URL(`http://${req.url}`);
-  
-  if (parsedUrl.hostname === TARGET_HOST) {
-    console.log(`🔗 CONNECT to ${TARGET_HOST}`);
   }
-  
-  const proxySocket = tls.connect({
-    port: 443,
-    host: parsedUrl.hostname
-  }, () => {
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    clientSocket.pipe(proxySocket);
-    proxySocket.pipe(clientSocket);
+
+  writeFileSync(HEX_FILE, body.toString('hex'), 'utf8');
+  writeFileSync(
+    JSON_FILE,
+    JSON.stringify(
+      {
+        capturedAt: new Date().toISOString(),
+        url: `https://${TARGET_HOST}${request.url ?? ''}`,
+        method: request.method,
+        headers,
+        bodyUtf8: body.toString('utf8'),
+        bodyHex: body.toString('hex'),
+        bodyLength: body.length,
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  console.log(`Captured ${request.method ?? 'UNKNOWN'} ${request.url ?? '/'}`);
+  console.log(`  raw bytes: ${HEX_FILE}`);
+  console.log(`  JSON:      ${JSON_FILE}`);
+}
+
+proxy.onRequest((ctx, callback) => {
+  const request = ctx.clientToProxyRequest;
+  if (!isTargetRequest(request.headers.host) || request.method !== 'POST') {
+    callback();
+    return;
+  }
+
+  const chunks: Buffer[] = [];
+  ctx.onRequestData((requestContext, chunk, dataCallback) => {
+    chunks.push(chunk);
+    dataCallback(null, chunk);
   });
-  
-  proxySocket.on('error', (e) => {
-    console.error('TLS connection error:', e.message);
+  ctx.onRequestEnd((requestContext, endCallback) => {
+    saveCapture(requestContext, Buffer.concat(chunks));
+    endCallback();
   });
+  callback();
 });
 
-proxy.listen(PROXY_PORT, () => {
-  console.log(`✅ Proxy listening on port ${PROXY_PORT}`);
-  console.log('');
-  console.log('⚠️  NOTE: This is a simple proxy. For full HTTPS interception with certificate,');
-  console.log('    you may need to use tools like mitmproxy or Fiddler.');
-  console.log('');
-  console.log('Waiting for requests... (Ctrl+C to stop)');
+proxy.onError((ctx, error, errorKind) => {
+  const url = ctx?.clientToProxyRequest?.url ?? '<unknown>';
+  console.error(`${errorKind} for ${url}: ${error?.message ?? 'unknown error'}`);
 });
 
-process.on('SIGINT', () => {
-  console.log('\n\n🛑 Stopping proxy...');
-  proxy.close(() => {
-    console.log('Proxy stopped.');
-    process.exit(0);
-  });
+proxy.listen({ host: '127.0.0.1', port: PROXY_PORT, sslCaDir: CERT_DIR }, (error) => {
+  if (error) {
+    console.error(`Unable to start proxy: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Proxy listening on http://127.0.0.1:${PROXY_PORT}`);
+  console.log(`Capturing POST requests for https://${TARGET_HOST}`);
+  console.log('Install/trust the generated local CA in the browser before using HTTPS interception.');
+  console.log('Press Ctrl+C to stop.');
+});
+
+process.once('SIGINT', () => {
+  proxy.close();
 });

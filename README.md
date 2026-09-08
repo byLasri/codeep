@@ -44,6 +44,9 @@ deepfree logout
 
 # Test - makes authenticated HTTP request to verify state works
 deepfree test
+
+# Headless chat - sends one message using the saved authentication state
+deepfree chat "Hello from DeepFree"
 ```
 
 ## Architecture

@@ -8,6 +8,11 @@ node_modules/
 
 # Environment
 .env
+
+# Local proxy captures and generated certificates
+.http-mitm-proxy/
+captured-request.hex
+captured-request.json
 .env.local
 *.env.*
 

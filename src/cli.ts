@@ -2,11 +2,13 @@ import { authenticate } from './auth/browser'
 import { loadAuthState, deleteAuthState, authStateExists } from './auth/store'
 import { createSession } from './deepseek/session'
 import { createChatSession } from './deepseek/client'
+import { requestCompletion } from './deepseek/completion'
 
 const AUTH = 'login'
 const STATUS = 'status'
 const LOGOUT = 'logout'
 const TEST = 'test'
+const CHAT = 'chat'
 
 const commands = process.argv.slice(2)
 
@@ -25,7 +27,7 @@ async function cmdLogin(): Promise<void> {
   } catch (err: unknown) {
     console.error('DeepFree: login failed')
     if (err instanceof Error && err.message.includes('HTTP authentication verification failed')) {
-      console.error('  Browser login appears complete, but HTTP authentication verification failed.')
+      console.error(`  ${err.message}`)
     } else {
       console.error(`  ${err}`)
     }
@@ -105,6 +107,25 @@ async function cmdTest(): Promise<void> {
   }
 }
 
+async function cmdChat(): Promise<void> {
+  const prompt = commands.slice(1).join(' ').trim()
+  if (!prompt) {
+    console.error('Usage: deepfree chat <message>')
+    process.exit(1)
+  }
+  const state = loadAuthState()
+  if (!state) {
+    console.error('DeepFree: not authenticated')
+    console.error('  Run: deepfree login')
+    process.exit(1)
+  }
+
+  const session = await createSession(state)
+  if (!session?.id) throw new Error('DeepSeek did not return a chat session ID')
+  const result = await requestCompletion(state, prompt, session.id)
+  console.log(result.text ?? JSON.stringify(result.raw, null, 2))
+}
+
 const command = commands[0]
 
 switch (command) {
@@ -120,7 +141,13 @@ switch (command) {
   case TEST:
     cmdTest()
     break
+  case CHAT:
+    cmdChat().catch((err: unknown) => {
+      console.error(`DeepFree: chat failed: ${err instanceof Error ? err.message : String(err)}`)
+      process.exit(1)
+    })
+    break
   default:
-    console.error('Usage: deepfree <login|status|logout|test>')
+    console.error('Usage: deepfree <login|status|logout|test|chat>')
     process.exit(1)
 }

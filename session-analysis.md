@@ -73,6 +73,36 @@ Based on the data:
 3. The answer (nonce) is sent back in `x-ds-pow-response` header
 4. The header contains a JSON with: algorithm, challenge, salt, answer, signature, target_path
 
+## Local Capture Proxy
+
+The repository includes a local MITM proxy for debugging requests made by a browser:
+
+```bash
+npx ts-node scripts/mitm-proxy.ts
+```
+
+The proxy listens only on `127.0.0.1`, forwards traffic normally, and captures POST
+requests to `chat.deepseek.com` in:
+
+- `captured-request.hex` - request body bytes encoded as hexadecimal
+- `captured-request.json` - request metadata, body text, and hexadecimal body
+
+Authentication, cookie, and PoW headers are redacted in the JSON metadata. Treat the
+captured request body as sensitive and do not commit either capture file.
+
+Before using HTTPS interception, install and trust the local CA generated under
+`.http-mitm-proxy`. This is the point where manual browser configuration and
+authentication are required; the proxy does not automate browser interaction.
+
+To inspect a capture without starting the proxy:
+
+```bash
+npx ts-node scripts/analyze-capture.ts
+```
+
+The proxy is intended for local debugging only. Do not use it against traffic you
+do not own or have permission to inspect.
+
 ## Headless Proxy Architecture
 
 ### Option 1: Direct API Client (Recommended)

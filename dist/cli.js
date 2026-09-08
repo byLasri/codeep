@@ -2,11 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const browser_1 = require("./auth/browser");
 const store_1 = require("./auth/store");
+const session_1 = require("./deepseek/session");
 const client_1 = require("./deepseek/client");
+const completion_1 = require("./deepseek/completion");
 const AUTH = 'login';
 const STATUS = 'status';
 const LOGOUT = 'logout';
 const TEST = 'test';
+const CHAT = 'chat';
 const commands = process.argv.slice(2);
 function isCommand(cmd, aliases) {
     return commands[0] === cmd || (aliases && aliases.includes(commands[0]));
@@ -22,7 +25,7 @@ async function cmdLogin() {
     catch (err) {
         console.error('DeepFree: login failed');
         if (err instanceof Error && err.message.includes('HTTP authentication verification failed')) {
-            console.error('  Browser login appears complete, but HTTP authentication verification failed.');
+            console.error(`  ${err.message}`);
         }
         else {
             console.error(`  ${err}`);
@@ -96,6 +99,24 @@ async function cmdTest() {
         process.exit(1);
     }
 }
+async function cmdChat() {
+    const prompt = commands.slice(1).join(' ').trim();
+    if (!prompt) {
+        console.error('Usage: deepfree chat <message>');
+        process.exit(1);
+    }
+    const state = (0, store_1.loadAuthState)();
+    if (!state) {
+        console.error('DeepFree: not authenticated');
+        console.error('  Run: deepfree login');
+        process.exit(1);
+    }
+    const session = await (0, session_1.createSession)(state);
+    if (!session?.id)
+        throw new Error('DeepSeek did not return a chat session ID');
+    const result = await (0, completion_1.requestCompletion)(state, prompt, session.id);
+    console.log(result.text ?? JSON.stringify(result.raw, null, 2));
+}
 const command = commands[0];
 switch (command) {
     case AUTH:
@@ -110,8 +131,14 @@ switch (command) {
     case TEST:
         cmdTest();
         break;
+    case CHAT:
+        cmdChat().catch((err) => {
+            console.error(`DeepFree: chat failed: ${err instanceof Error ? err.message : String(err)}`);
+            process.exit(1);
+        });
+        break;
     default:
-        console.error('Usage: deepfree <login|status|logout|test>');
+        console.error('Usage: deepfree <login|status|logout|test|chat>');
         process.exit(1);
 }
 //# sourceMappingURL=cli.js.map

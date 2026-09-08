@@ -84,7 +84,25 @@ async function launchAndAuth() {
         else {
             throw new Error('Unsupported browser family: ' + browserInfo.family);
         }
+        let observedAuthorizationToken;
+        const pendingAuthHeaderReads = [];
+        const observeRequest = (request) => {
+            const read = request.allHeaders().then((headers) => {
+                const url = new URL(request.url());
+                if (!url.hostname.endsWith('deepseek.com'))
+                    return;
+                const authorization = headers.authorization;
+                if (!observedAuthorizationToken && authorization?.trim()) {
+                    observedAuthorizationToken = authorization.replace(/^Bearer\s+/i, '').trim();
+                }
+            }).catch(() => {
+                // Ignore requests whose headers are unavailable.
+            });
+            pendingAuthHeaderReads.push(read);
+        };
+        context.on('request', observeRequest);
         const page = await context.newPage();
+        page.on('request', observeRequest);
         console.log('DeepFree: Opening browser for authentication...');
         console.log('Please log in at https://chat.deepseek.com/sign_in');
         console.log('Use email/password login (not Google auth)');
@@ -92,14 +110,18 @@ async function launchAndAuth() {
             waitUntil: 'networkidle',
         });
         await waitForUserLogin(page);
-        const authState = await captureAuthStateFromPage(page);
-        const verified = await verifyAuthState(authState);
-        if (!verified) {
+        await page.waitForTimeout(1500);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await Promise.all(pendingAuthHeaderReads);
+        const authState = await captureAuthStateFromPage(page, observedAuthorizationToken);
+        const verification = await verifyAuthState(authState);
+        if (!verification.success) {
             authState.verificationStatus = 'failed';
+            (0, store_1.deleteAuthState)();
             if (browser) {
                 await browser.close();
             }
-            throw new Error('Browser login appears complete, but HTTP authentication verification failed.');
+            throw new Error(`Browser login appears complete, but HTTP authentication verification failed (authorization token observed: ${Boolean(authState.authorizationToken)}; ${verification.error ?? 'no API error details'}).`);
         }
         authState.verificationStatus = 'verified';
         (0, store_1.saveAuthState)(authState);
@@ -352,7 +374,7 @@ async function waitForUserLogin(page) {
         check();
     });
 }
-async function captureAuthStateFromPage(page) {
+async function captureAuthStateFromPage(page, observedAuthorizationToken) {
     const cookies = [];
     try {
         const rawCookies = await page.context().cookies();
@@ -370,20 +392,56 @@ async function captureAuthStateFromPage(page) {
     catch {
         // ignore
     }
-    let authorizationToken = undefined;
+    let authorizationToken = observedAuthorizationToken ?? undefined;
     try {
         const evalResult = await page.evaluate(() => {
-            for (const key of Object.keys(window)) {
-                const val = window[key];
-                if (typeof val === 'string' &&
-                    val.startsWith('Bearer ') &&
-                    val.length > 20) {
-                    return val;
+            const stores = [window.localStorage, window.sessionStorage];
+            const normalizeToken = (value) => {
+                const bearer = value.match(/Bearer\s+([^\s"',}]+)/i);
+                if (bearer?.[1])
+                    return bearer[1];
+                if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) {
+                    return value;
+                }
+                return null;
+            };
+            const findToken = (value, key = '') => {
+                if (typeof value === 'string') {
+                    const token = normalizeToken(value);
+                    return token && (/token|auth|credential|session/i.test(key) || value.startsWith('Bearer '))
+                        ? token
+                        : null;
+                }
+                if (value && typeof value === 'object') {
+                    for (const [nestedKey, nested] of Object.entries(value)) {
+                        const result = findToken(nested, nestedKey);
+                        if (result)
+                            return result;
+                    }
+                }
+                return null;
+            };
+            for (const store of stores) {
+                for (let index = 0; index < store.length; index += 1) {
+                    const key = store.key(index);
+                    const value = key ? store.getItem(key) : null;
+                    if (value) {
+                        let parsed = value;
+                        try {
+                            parsed = JSON.parse(value);
+                        }
+                        catch {
+                            // Plain storage values are handled directly.
+                        }
+                        const token = findToken(parsed, key ?? '');
+                        if (token)
+                            return `Bearer ${token}`;
+                    }
                 }
             }
             return null;
         });
-        if (evalResult && typeof evalResult === 'string') {
+        if (!authorizationToken && evalResult && typeof evalResult === 'string') {
             authorizationToken = evalResult.replace(/^Bearer\s+/i, '').trim();
             if (authorizationToken === '') {
                 authorizationToken = undefined;
@@ -392,6 +450,10 @@ async function captureAuthStateFromPage(page) {
     }
     catch {
         // ignore
+    }
+    if (!authorizationToken) {
+        const cookiesWithToken = cookies.find((cookie) => /token|auth/i.test(cookie.name));
+        authorizationToken = cookiesWithToken?.value;
     }
     return {
         authorizationToken,
@@ -403,6 +465,6 @@ async function captureAuthStateFromPage(page) {
 async function verifyAuthState(authState) {
     const clientModule = await Promise.resolve().then(() => __importStar(require('../deepseek/client')));
     const result = await clientModule.createChatSession(authState);
-    return result.success;
+    return { success: result.success, error: result.error };
 }
 //# sourceMappingURL=browser.js.map

@@ -12,12 +12,15 @@ export async function createChatSession(authState: AuthState): Promise<DeepSeekR
   const url = new URL('/api/v0/chat_session/create', BASE_ORIGIN)
 
   const headers = new Headers({
+    Accept: '*/*',
+    'Content-Type': 'application/json',
     'Origin': BASE_ORIGIN,
     'Referer': BASE_ORIGIN + '/',
     'x-client-bundle-id': 'com.deepseek.chat',
     'x-client-locale': 'en_US',
     'x-client-platform': 'web',
     'x-client-version': '2.4.0',
+    'x-client-timezone-offset': String(new Date().getTimezoneOffset()),
   })
 
   // Add Authorization header if we have a token
@@ -36,22 +39,10 @@ export async function createChatSession(authState: AuthState): Promise<DeepSeekR
     }
   }
 
-  const body = JSON.stringify({
-    chat_session_id: '',
-    parent_message_id: null,
-    model_type: 'expert',
-    prompt: '',
-    ref_file_ids: [],
-    thinking_enabled: true,
-    search_enabled: false,
-    action: null,
-    preempt: false,
-  })
-
   const requestOptions = {
     method: 'POST',
     headers,
-    body,
+    body: '{}',
   }
 
   const response = await fetch(url, requestOptions)
@@ -65,9 +56,10 @@ export async function createChatSession(authState: AuthState): Promise<DeepSeekR
     data = text
   }
 
+  const apiSucceeded = data?.code === undefined || data?.code === 0
   return {
-    success: response.ok,
+    success: response.ok && apiSucceeded,
     data,
-    error: response.ok ? undefined : (data?.error || text),
+    error: response.ok && apiSucceeded ? undefined : (data?.msg || data?.error || text),
   }
 }

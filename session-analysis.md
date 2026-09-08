@@ -2,6 +2,9 @@
 
 ## Extracted Credentials from HAR Data
 
+> Sensitive authorization tokens, cookies, and captured request files are
+> intentionally excluded from this documentation and must not be committed.
+
 ### Authentication Token
 ```
 Authorization: Bearer xcmnne/c0muYFBaZGFxe/rMW63qWRZHZZfdj5ryLbmLGzlUZWF38izzAa1IIYLMT
@@ -102,6 +105,17 @@ npx ts-node scripts/analyze-capture.ts
 
 The proxy is intended for local debugging only. Do not use it against traffic you
 do not own or have permission to inspect.
+
+## Verified Headless API Implementation
+
+The working implementation is in `src/deepseek/`. It uses the manually
+captured authentication state, requests a fresh PoW challenge for every
+completion, solves DeepSeekHashV1, and sends the browser-compatible JSON
+payload. The completion response is an SSE stream and currently remains
+available as the raw stream returned by the CLI.
+
+See [LIVE_SESSION_FINDINGS.md](LIVE_SESSION_FINDINGS.md) for the verified
+request sequence, PoW details, reference vector, and commands.
 
 ## Headless Proxy Architecture
 

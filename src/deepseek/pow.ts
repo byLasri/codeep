@@ -17,49 +17,99 @@ const ROTATIONS = [0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 4
 const CONSTANTS = [
   1n, 0x8082n, 0x800000000000808an, 0x8000000080008000n, 0x808bn, 0x80000001n,
   0x8000000080008081n, 0x8000000000008009n, 0x8an, 0x88n, 0x80008009n, 0x8000000an,
-  0x800000008000808bn, 0x800000000000008bn, 0x8000000000008089n, 0x8000000000008003n,
+  0x8000808bn, 0x800000000000008bn, 0x8000000000008089n, 0x8000000000008003n,
   0x8000000000008002n, 0x8000000000000080n, 0x800an, 0x800000008000000an,
   0x8000000080008081n, 0x8000000000008080n, 0x80000001n, 0x8000000080008008n,
 ]
 
 export function hashDeepSeek(input: string): string {
   const bytes = new TextEncoder().encode(input)
-  const state = Array<bigint>(25).fill(0n)
-  const parity = Array<bigint>(5).fill(0n)
-  const theta = Array<bigint>(5).fill(0n)
-  const rhoPi = Array<bigint>(25).fill(0n)
-  const block = new Uint8Array(136)
-  block.set(bytes)
-  block[bytes.length] ^= 0x06
-  block[135] ^= 0x80
-  for (let index = 0; index < 136; index += 1) {
-    state[Math.floor(index / 8)] ^= BigInt(block[index]) << BigInt((index % 8) * 8)
-  }
-  for (let round = 1; round < 24; round += 1) {
-    for (let x = 0; x < 5; x += 1) parity[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]
-    for (let x = 0; x < 5; x += 1) theta[x] = parity[(x + 4) % 5] ^ rotateLeft(parity[(x + 1) % 5], 1)
-    for (let y = 0; y < 5; y += 1) for (let x = 0; x < 5; x += 1) state[x + 5 * y] ^= theta[x]
-    for (let y = 0; y < 5; y += 1) for (let x = 0; x < 5; x += 1) {
-      const lane = x + 5 * y
-      rhoPi[y + 5 * ((2 * x + 3 * y) % 5)] = rotateLeft(state[lane], ROTATIONS[lane])
+  const state = new Uint32Array(50)
+  const rhoPi = new Uint32Array(50)
+  const parity = new Uint32Array(10)
+  const theta = new Uint32Array(10)
+
+  for (let offset = 0; offset < bytes.length; offset += 136) {
+    const remaining = Math.min(136, bytes.length - offset)
+    for (let index = 0; index < remaining; index += 1) {
+      state[index >>> 2] ^= bytes[offset + index] << ((index & 3) * 8)
     }
-    for (let y = 0; y < 5; y += 1) for (let x = 0; x < 5; x += 1) {
-      const row = 5 * y
-      state[x + row] = rhoPi[x + row] ^ (~rhoPi[((x + 1) % 5) + row] & MASK & rhoPi[((x + 2) % 5) + row])
+    if (remaining < 136) {
+      state[remaining >>> 2] ^= 0x06 << ((remaining & 3) * 8)
+      state[33] ^= 0x80000000
+    } else {
+      keccakP(state, rhoPi, parity, theta)
     }
-    state[0] ^= CONSTANTS[round]
   }
-  return state
-    .slice(0, 4)
-    .flatMap((lane) => Array.from({ length: 8 }, (_, i) => Number((lane >> BigInt(i * 8)) & 0xffn)))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+
+  if (bytes.length === 0 || bytes.length % 136 === 0) {
+    state[0] ^= 0x06
+    state[33] ^= 0x80000000
+    keccakP(state, rhoPi, parity, theta)
+  }
+  if (bytes.length % 136 !== 0) keccakP(state, rhoPi, parity, theta)
+
+  let digest = ''
+  for (let index = 0; index < 32; index += 1) {
+    const byte = (state[index >>> 2] >>> ((index & 3) * 8)) & 0xff
+    digest += byte.toString(16).padStart(2, '0')
+  }
+  return digest
 }
 
-function rotateLeft(value: bigint, amount: number): bigint {
-  if (amount === 0) return value
-  const shift = BigInt(amount)
-  return ((value << shift) | (value >> (64n - shift))) & MASK
+function keccakP(state: Uint32Array, rhoPi: Uint32Array, parity: Uint32Array, theta: Uint32Array): void {
+  for (let round = 1; round < 24; round += 1) {
+    for (let x = 0; x < 5; x += 1) {
+      const word = 2 * x
+      parity[word] = state[word] ^ state[word + 10] ^ state[word + 20] ^ state[word + 30] ^ state[word + 40]
+      parity[word + 1] = state[word + 1] ^ state[word + 11] ^ state[word + 21] ^ state[word + 31] ^ state[word + 41]
+    }
+    for (let x = 0; x < 5; x += 1) {
+      const previous = 2 * ((x + 4) % 5)
+      const next = 2 * ((x + 1) % 5)
+      const low = (parity[next] << 1) | (parity[next + 1] >>> 31)
+      const high = (parity[next + 1] << 1) | (parity[next] >>> 31)
+      theta[2 * x] = parity[previous] ^ low
+      theta[2 * x + 1] = parity[previous + 1] ^ high
+    }
+    for (let x = 0; x < 5; x += 1) {
+      const word = 2 * x
+      for (let lane = word; lane < 50; lane += 10) {
+        state[lane] ^= theta[word]
+        state[lane + 1] ^= theta[word + 1]
+      }
+    }
+    rhoPi[0] = state[0]
+    rhoPi[1] = state[1]
+    for (let lane = 1; lane < 25; lane += 1) {
+      const source = 2 * lane
+      const x = lane % 5
+      const y = Math.floor(lane / 5)
+      const destination = 2 * (y + 5 * ((2 * x + 3 * y) % 5))
+      const amount = ROTATIONS[lane]
+      const low = state[source]
+      const high = state[source + 1]
+      if (amount < 32) {
+        rhoPi[destination] = (low << amount) | (high >>> (32 - amount))
+        rhoPi[destination + 1] = (high << amount) | (low >>> (32 - amount))
+      } else {
+        const reduced = amount - 32
+        rhoPi[destination] = (high << reduced) | (low >>> (32 - reduced))
+        rhoPi[destination + 1] = (low << reduced) | (high >>> (32 - reduced))
+      }
+    }
+    for (let lane = 0; lane < 25; lane += 1) {
+      const word = 2 * lane
+      const x = lane % 5
+      const row = lane - x
+      const next = 2 * (row + ((x + 1) % 5))
+      const nextNext = 2 * (row + ((x + 2) % 5))
+      state[word] = rhoPi[word] ^ (~rhoPi[next] & rhoPi[nextNext])
+      state[word + 1] = rhoPi[word + 1] ^ (~rhoPi[next + 1] & rhoPi[nextNext + 1])
+    }
+    state[0] ^= Number(CONSTANTS[round] & 0xffffffffn)
+    state[1] ^= Number((CONSTANTS[round] >> 32n) & 0xffffffffn)
+  }
 }
 
 export function solvePow(challenge: PowChallenge): PowResponse {

@@ -1,123 +1,134 @@
-# DeepSeek Live Session API Investigation Findings
+# DeepSeek Headless API Findings
 
-## Summary
+## Verified flow
 
-Successfully investigated the DeepSeek API using credentials extracted from an active browser session. While we can authenticate and create sessions, the Proof of Work (PoW) validation fails with `INVALID_POW_RESPONSE` error.
+The headless client works with authentication captured from a user-completed
+browser login:
 
-## What Works ✅
+1. `deepfree login` opens a browser and captures cookies plus the authorization
+   token from authenticated DeepSeek requests.
+2. `POST /api/v0/chat_session/create` creates a chat session with body `{}`.
+3. `POST /api/v0/chat/create_pow_challenge` requests a challenge for
+   `/api/v0/chat/completion`.
+4. The client solves `DeepSeekHashV1` and sends the result in the
+   `x-ds-pow-response` header.
+5. `POST /api/v0/chat/completion` returns an SSE response.
 
-1. **Authentication**: Bearer token `xcmnne/c0muYFBaZGFxe/rMW63qWRZHZZfdj5ryLbmLGzlUZWF38izzAa1IIYLMT` is valid
-2. **Session Creation**: Can create new chat sessions via `/api/v0/chat_session/create`
-3. **PoW Challenge Retrieval**: Successfully get challenges from `/api/v0/chat/create_pow_challenge`
-4. **PoW Solving**: Correctly implements DeepSeekHashV1 algorithm (SHA256 hash < target)
+No credentials, cookies, or captured request files belong in source control.
 
-## What Fails ❌
+## Required request headers
 
-**Chat Completion Request** returns `40301 INVALID_POW_RESPONSE` despite:
-- Using correct nonce that satisfies difficulty requirement
-- Properly formatted PoW response object
-- Base64 encoding in `x-ds-pow-response` header
+The client sends the browser-compatible headers below. Values for
+`Authorization` and `Cookie` come only from the locally stored auth state and
+are never logged.
 
-## API Endpoints Discovered
-
-```typescript
-// 1. Get PoW Challenge
-POST https://chat.deepseek.com/api/v0/chat/create_pow_challenge
-Headers: Authorization, x-client-* 
-Body: { "target_path": "/api/v0/chat/completion" }
-Response: { code: 0, data: { biz_data: { challenge: {...} } } }
-
-// 2. Create Chat Session  
-POST https://chat.deepseek.com/api/v0/chat_session/create
-Headers: Authorization, x-client-*
-Body: {}
-Response: { code: 0, data: { biz_data: { chat_session: { id: "..." } } } }
-
-// 3. Chat Completion (requires valid PoW)
-POST https://chat.deepseek.com/api/v0/chat/completion
-Headers: Authorization, x-client-*, x-ds-pow-response (base64 JSON)
-Body: {
-  chat_session_id: "...",
-  messages: [{ role: "user", content: "..." }],
-  prompt: "...",
-  ref_file_ids: [],
-  stream: false
-}
+```text
+Accept: */*
+Content-Type: application/json
+Origin: https://chat.deepseek.com
+Referer: https://chat.deepseek.com/
+Authorization: Bearer <locally stored token>
+Cookie: <locally stored cookies>
+x-client-bundle-id: com.deepseek.chat
+x-client-platform: web
+x-client-version: 2.4.0
+x-client-locale: en_US
+x-client-timezone-offset: <local offset>
 ```
 
-## PoW Algorithm Details
+## PoW challenge
 
-**Challenge Structure:**
 ```json
 {
   "algorithm": "DeepSeekHashV1",
-  "challenge": "5038c6b61677751db1d8f4907ffd0e8862f93156c316a294367608dffbf67915",
-  "salt": "a75e60eaaac562b5ef02",
-  "signature": "5a0c0b2d9b018ac6f1356db29ff20007b76e621d26dc8f2bf6a949ee339dad00",
+  "challenge": "<64-character hexadecimal digest>",
+  "salt": "<challenge salt>",
+  "signature": "<server signature>",
   "difficulty": 144000,
-  "expire_at": 1788828000000,
+  "expire_at": 0,
   "expire_after": 300000,
   "target_path": "/api/v0/chat/completion"
 }
 ```
 
-**Solution Method:**
-```typescript
-// Target = 2^256 / difficulty
-const target = BigInt(2)**BigInt(256) / BigInt(difficulty);
+The real `expire_at` value is supplied by the server. The solver hashes:
 
-// Find nonce where SHA256(challenge + salt + nonce) < target
-for (let nonce = 0; ; nonce++) {
-  const hash = sha256(`${challenge}${salt}${nonce}`);
-  if (hashBigInt < target) return nonce;
+```text
+`${salt}_${expire_at}_${nonce}`
+```
+
+and searches nonce values from `0` through `difficulty - 1` until the
+DeepSeekHashV1 digest equals `challenge`.
+
+DeepSeekHashV1 is a custom KECCAK-p[1600] construction:
+
+- rounds 1 through 23
+- 136-byte rate
+- little-endian 32-bit words representing 64-bit lanes
+- SHA3 domain suffix `0x06`
+- final rate byte XOR `0x80`
+- standard Keccak rotation offsets and round constants
+
+The implementation is in [src/deepseek/pow.ts](src/deepseek/pow.ts). Its
+reference vector is:
+
+```text
+DeepSeekHashV1("abc")
+f841106c601ce9be9bc38525e90d4178d47f21dd8eb9f238fc55ffaa4ca94506
+```
+
+The resulting PoW object is compact JSON and Base64 encoded:
+
+```json
+{
+  "algorithm": "DeepSeekHashV1",
+  "challenge": "<original challenge>",
+  "salt": "<original salt>",
+  "answer": 0,
+  "signature": "<original signature>",
+  "target_path": "/api/v0/chat/completion"
 }
 ```
 
-**PoW Response Header:**
-```typescript
-// JSON object base64 encoded
-const powResponse = {
-  algorithm: "DeepSeekHashV1",
-  challenge: "...",
-  salt: "...",
-  answer: <nonce>,
-  signature: "...",  // From challenge, not modified
-  target_path: "/api/v0/chat/completion"
-};
-headerValue = Buffer.from(JSON.stringify(powResponse)).toString('base64');
+## Completion request
+
+```json
+{
+  "chat_session_id": "<session id>",
+  "parent_message_id": null,
+  "model_type": "expert",
+  "prompt": "<user prompt>",
+  "ref_file_ids": [],
+  "thinking_enabled": true,
+  "search_enabled": false,
+  "action": null,
+  "preempt": false
+}
 ```
 
-## Possible Issues
+The server responds with Server-Sent Events. Events include `ready`,
+`update_session`, incremental `data` fragments, `title`, and `close`.
+Completion status is reported in the streamed data as `FINISHED`.
 
-1. **Signature Validation**: Server may verify the signature matches the challenge+answer pair
-2. **Timing**: PoW must be submitted before `expire_at` timestamp
-3. **Single Use**: Each challenge may only be valid for one request
-4. **Additional Fields**: Request body may need extra fields not captured in HAR
-5. **Client Fingerprinting**: Server may validate client characteristics
+## Running the client
 
-## Next Steps for Full Implementation
+```powershell
+npm install
+npm run build
+npm start -- login
+node dist/cli.js chat "Reply with exactly LIVE_OK"
+```
 
-To achieve working headless API access:
+The current CLI prints the raw SSE stream. This preserves all server events;
+an SSE parser can be added later to expose only assistant response fragments.
 
-1. **Capture Complete Browser Request**: Use MITM proxy to capture exact bytes of successful request
-2. **Analyze Signature Algorithm**: Determine how signature is generated/validated
-3. **Check for Additional Headers**: Browser may send extra headers not in our implementation
-4. **Verify Request Order**: Some APIs require specific sequence of calls
-5. **Test with Fresh Credentials**: Current session may have restrictions
+## Validation
 
-## Test Code Location
+```powershell
+npm run build
+npm test -- --runInBand
+```
 
-Working test implementation: `src/test-live-session.ts`
-
-Run with: `npx ts-node src/test-live-session.ts`
-
-## Credentials Used
-
-- **Auth Token**: `Bearer xcmnne/c0muYFBaZGFxe/rMW63qWRZHZZfdj5ryLbmLGzlUZWF38izzAa1IIYLMT`
-- **Extracted From**: HAR file provided by user after browser login
-- **Session ID**: Dynamically created (not reused from HAR)
-
----
-
-*Investigation Date: 2026-09-08*
-*Status: Partial Success - Auth works, PoW validation failing*
+The PoW unit tests verify the reference digest and padding edge cases. A live
+request has been verified to complete with `status: FINISHED` and an assistant
+response.

@@ -1,7 +1,7 @@
 import { AuthState } from '../auth/state'
 import { PowChallenge, solvePow } from './pow'
 
-const BASE_ORIGIN = 'https://chat.deepseek.com'
+const BASE_ORIGIN = process.env.CO_DEEP_PROXY_ORIGIN || 'https://chat.deepseek.com'
 const COMPLETION_PATH = '/api/v0/chat/completion'
 
 export interface CompletionResult {

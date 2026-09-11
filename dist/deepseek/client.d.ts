@@ -4,4 +4,4 @@ export interface DeepSeekResponse<T = any> {
     data?: T;
     error?: string;
 }
-export declare function createChatSession(authState: AuthState): Promise<DeepSeekResponse>;
+export declare function createChatSession(authState: AuthState, origin?: string): Promise<DeepSeekResponse>;

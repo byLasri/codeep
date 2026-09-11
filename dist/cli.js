@@ -1,10 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const browser_1 = require("./auth/browser");
-const store_1 = require("./auth/store");
-const session_1 = require("./deepseek/session");
-const client_1 = require("./deepseek/client");
-const completion_1 = require("./deepseek/completion");
 const AUTH = 'login';
 const STATUS = 'status';
 const LOGOUT = 'logout';
@@ -17,9 +13,8 @@ function isCommand(cmd, aliases) {
 async function cmdLogin() {
     try {
         const result = await (0, browser_1.authenticate)();
-        const authState = result.authState;
         console.log('DeepFree: login complete');
-        console.log('  Authentication state saved to OS application-data directory');
+        console.log('  Authentication state sent to proxy');
         console.log('  Browser closed successfully');
     }
     catch (err) {
@@ -34,70 +29,50 @@ async function cmdLogin() {
     }
 }
 async function cmdStatus() {
-    const hasState = (0, store_1.authStateExists)();
-    if (!hasState) {
-        console.log('DeepFree');
-        console.log('Provider: DeepSeek Web');
-        console.log('Status: unauthenticated');
-        console.log('Captured: none');
-        console.log('HTTP verification: none');
-        return;
+    const proxy = process.env.CO_DEEP_PROXY_ORIGIN || 'http://127.0.0.1:8787';
+    try {
+        const res = await fetch(new URL('/v1/auth', proxy).toString(), { method: 'GET' });
+        const data = await res.json().catch(() => ({ exists: false }));
+        if (!data.exists) {
+            console.log('DeepFree');
+            console.log('Provider: DeepSeek Web');
+            console.log('Status: unauthenticated');
+            console.log('Captured: none');
+            console.log('HTTP verification: none');
+            return;
+        }
     }
-    const state = (0, store_1.loadAuthState)();
-    if (state === null) {
-        console.log('DeepFree');
-        console.log('Provider: DeepSeek Web');
-        console.log('Status: unauthenticated');
-        console.log('Captured: none');
-        console.log('HTTP verification: none');
-        return;
+    catch (e) {
+        console.error('DeepFree: failed to reach proxy for status:', e);
+        process.exit(1);
     }
     console.log('DeepFree');
     console.log('Provider: DeepSeek Web');
     console.log('Status: authenticated');
-    console.log(`Captured: ${new Date(state.capturedAt).toISOString()}`);
-    console.log('HTTP verification: successful');
-    console.log(`Authorization: ${state.authorizationToken ? 'present' : 'absent'}`);
-    console.log(`Cookies: ${state.cookies.length}`);
+    console.log('Authentication state is held by the proxy');
 }
 async function cmdLogout() {
-    (0, store_1.deleteAuthState)();
-    console.log('DeepFree: logged out');
-    console.log('  Authentication state deleted');
-    console.log('  Browser profile untouched');
+    const proxy = process.env.CO_DEEP_PROXY_ORIGIN || 'http://127.0.0.1:8787';
+    try {
+        const res = await fetch(new URL('/v1/auth', proxy).toString(), { method: 'DELETE' });
+        if (!res.ok)
+            throw new Error(`proxy returned ${res.status}`);
+        console.log('DeepFree: logged out');
+        console.log('  Authentication state deleted from proxy');
+        console.log('  Browser profile untouched');
+    }
+    catch (e) {
+        console.error('DeepFree: failed to delete auth state on proxy:', e);
+        process.exit(1);
+    }
 }
 async function cmdTest() {
-    const hasState = (0, store_1.authStateExists)();
-    if (!hasState) {
-        console.log('DeepFree: not authenticated');
-        console.log('  No saved authentication state found.');
-        console.log('  Run: deepfree login');
-        process.exit(1);
-    }
-    const state = (0, store_1.loadAuthState)();
-    if (state === null) {
-        console.log('DeepFree: not authenticated');
-        console.log('  Failed to load authentication state.');
-        process.exit(1);
-    }
-    try {
-        const result = await (0, client_1.createChatSession)(state);
-        if (result.success && result.data) {
-            console.log('DeepFree: HTTP test successful');
-            console.log('  Authenticated request reached DeepSeek API');
-            console.log('  Session creation responded successfully');
-        }
-        else {
-            console.log('DeepFree: HTTP test failed');
-            console.log(`  API response: ${result.error || 'unknown error'}`);
-            process.exit(1);
-        }
-    }
-    catch (err) {
-        console.log('DeepFree: HTTP test failed');
-        console.log(`  ${err}`);
-        process.exit(1);
-    }
+    const proxy = process.env.CO_DEEP_PROXY_ORIGIN || 'http://127.0.0.1:8787';
+    const response = await fetch(new URL('/health', proxy));
+    if (!response.ok)
+        throw new Error(`proxy returned ${response.status}`);
+    const data = await response.json();
+    console.log(`DeepFree: proxy ${data.authenticated ? 'authenticated' : 'not authenticated'}`);
 }
 async function cmdChat() {
     const prompt = commands.slice(1).join(' ').trim();
@@ -105,17 +80,7 @@ async function cmdChat() {
         console.error('Usage: deepfree chat <message>');
         process.exit(1);
     }
-    const state = (0, store_1.loadAuthState)();
-    if (!state) {
-        console.error('DeepFree: not authenticated');
-        console.error('  Run: deepfree login');
-        process.exit(1);
-    }
-    const session = await (0, session_1.createSession)(state);
-    if (!session?.id)
-        throw new Error('DeepSeek did not return a chat session ID');
-    const result = await (0, completion_1.requestCompletion)(state, prompt, session.id);
-    console.log(result.text ?? JSON.stringify(result.raw, null, 2));
+    throw new Error('The bridge does not send chat requests. Configure Codex to use the proxy and send the prompt there.');
 }
 const command = commands[0];
 switch (command) {

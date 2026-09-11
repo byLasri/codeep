@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.requestCompletion = requestCompletion;
 const pow_1 = require("./pow");
-const BASE_ORIGIN = 'https://chat.deepseek.com';
+const BASE_ORIGIN = process.env.CO_DEEP_PROXY_ORIGIN || 'https://chat.deepseek.com';
 const COMPLETION_PATH = '/api/v0/chat/completion';
 function authHeaders(authState) {
     const headers = new Headers({

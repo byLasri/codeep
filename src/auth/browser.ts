@@ -2,7 +2,7 @@ import { execSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { saveAuthState, deleteAuthState, authStateExists } from './store'
+import { deleteAuthState, sendAuthStateToProxy } from './store'
 import { AuthState, AuthCookie } from './state'
 import type { Page, Browser, BrowserContext } from 'playwright'
 
@@ -115,14 +115,17 @@ async function launchAndAuth(): Promise<{
     }
 
     authState.verificationStatus = 'verified' as const
-    saveAuthState(authState)
+    const sent = await sendAuthStateToProxy(authState)
+    if (!sent) throw new Error('Proxy rejected or did not receive authentication state')
+    deleteAuthState()
+    console.log('DeepFree: Auth state forwarded to proxy and removed locally')
 
     if (browser) {
       await browser.close()
     }
 
     console.log('DeepFree: Login complete!')
-    console.log('  Authentication state saved')
+    console.log('  Authentication state stored by proxy')
     console.log('  Browser closed')
 
     return {
@@ -507,6 +510,8 @@ async function captureAuthStateFromPage(
 
 async function verifyAuthState(authState: AuthState): Promise<{ success: boolean; error?: string }> {
   const clientModule = await import('../deepseek/client')
-  const result = await clientModule.createChatSession(authState)
+  // Login verification is the one direct DeepSeek request. The proxy cannot
+  // verify these new credentials until they have been uploaded.
+  const result = await clientModule.createChatSession(authState, 'https://chat.deepseek.com')
   return { success: result.success, error: result.error }
 }

@@ -57,6 +57,21 @@ export function saveAuthState(state: AuthState): void {
   fs.writeFileSync(statePath, JSON.stringify(data, null, 2), 'utf-8')
 }
 
+export async function sendAuthStateToProxy(state: AuthState): Promise<boolean> {
+  try {
+    const proxy = process.env.CO_DEEP_PROXY_ORIGIN || 'http://127.0.0.1:8787'
+    const response = await fetch(new URL('/v1/auth', proxy).toString(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(state),
+    })
+    return response.ok
+  } catch (e) {
+    console.error('Failed to send auth state to proxy:', e)
+    return false
+  }
+}
+
 export function deleteAuthState(): void {
   const statePath = getStatePath()
   try {

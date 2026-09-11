@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadAuthState = loadAuthState;
 exports.saveAuthState = saveAuthState;
+exports.sendAuthStateToProxy = sendAuthStateToProxy;
 exports.deleteAuthState = deleteAuthState;
 exports.authStateExists = authStateExists;
 const fs = __importStar(require("fs"));
@@ -95,6 +96,21 @@ function saveAuthState(state) {
         verificationStatus: state.verificationStatus,
     };
     fs.writeFileSync(statePath, JSON.stringify(data, null, 2), 'utf-8');
+}
+async function sendAuthStateToProxy(state) {
+    try {
+        const proxy = process.env.CO_DEEP_PROXY_ORIGIN || 'http://127.0.0.1:8787';
+        const response = await fetch(new URL('/v1/auth', proxy).toString(), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(state),
+        });
+        return response.ok;
+    }
+    catch (e) {
+        console.error('Failed to send auth state to proxy:', e);
+        return false;
+    }
 }
 function deleteAuthState() {
     const statePath = getStatePath();

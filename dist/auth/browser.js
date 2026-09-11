@@ -127,12 +127,16 @@ async function launchAndAuth() {
             throw new Error(`Browser login appears complete, but HTTP authentication verification failed (authorization token observed: ${Boolean(authState.authorizationToken)}; ${verification.error ?? 'no API error details'}).`);
         }
         authState.verificationStatus = 'verified';
-        (0, store_1.saveAuthState)(authState);
+        const sent = await (0, store_1.sendAuthStateToProxy)(authState);
+        if (!sent)
+            throw new Error('Proxy rejected or did not receive authentication state');
+        (0, store_1.deleteAuthState)();
+        console.log('DeepFree: Auth state forwarded to proxy and removed locally');
         if (browser) {
             await browser.close();
         }
         console.log('DeepFree: Login complete!');
-        console.log('  Authentication state saved');
+        console.log('  Authentication state stored by proxy');
         console.log('  Browser closed');
         return {
             authState,
@@ -500,7 +504,9 @@ async function captureAuthStateFromPage(page, observedAuthorizationToken) {
 }
 async function verifyAuthState(authState) {
     const clientModule = await Promise.resolve().then(() => __importStar(require('../deepseek/client')));
-    const result = await clientModule.createChatSession(authState);
+    // Login verification is the one direct DeepSeek request. The proxy cannot
+    // verify these new credentials until they have been uploaded.
+    const result = await clientModule.createChatSession(authState, 'https://chat.deepseek.com');
     return { success: result.success, error: result.error };
 }
 //# sourceMappingURL=browser.js.map
